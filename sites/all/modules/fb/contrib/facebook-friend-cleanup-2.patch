@@ -1,0 +1,1028 @@
+From d3b04ee4f16f829f6512bed87c177d470a0b303e Thu, 11 Aug 2011 12:55:59 +0200
+From: Bram Goffings <bramgoffings@gmail.com>
+Date: Thu, 11 Aug 2011 12:55:52 +0200
+Subject: [PATCH] facebook module cleanup
+
+diff --git a/contrib/fb_example.info b/contrib/fb_example.info
+index 24320c2..04e2ee1 100644
+--- a/contrib/fb_example.info
++++ b/contrib/fb_example.info
+@@ -1,7 +1,7 @@
+ name = FB Example Customizations
+ description = (fb_example.module) These hooks will make your site behave more like <a href=http://drupalforfcebook.org target=_blank>drupalforfacebook.org</a>.  Use this code as an example for your own customizations.
+ package = Drupal for Facebook - contrib
+-core = 6.x
++core = 7.x
+ dependencies[] = fb
+ dependencies[] = fb_form
+ dependencies[] = fb_app
+diff --git a/contrib/fb_example.module b/contrib/fb_example.module
+index 5fbd534..9cce116 100644
+--- a/contrib/fb_example.module
++++ b/contrib/fb_example.module
+@@ -10,18 +10,18 @@
+  */
+ 
+ /**
+- * Implements hook_link().
++ * Returns an XFBML like button.
+  *
+- * Add an XFBML like button to all node pages.  The button will appear next to
+- * other node links, such as "add new comment".
++ * This button can be used on all node pages. The button will appear next to
++ * other node links, such as "add new comment". Not on teasers!
+  */
+-function fb_example_link($type, $object, $teaser = FALSE) {
+-  if ($type == 'node' && !$teaser) {
++function fb_example_XFMBL_like_button($node, $teaser = FALSE) {
++  if (!$teaser) {
+     $items = array();
+     if (variable_get('fb_example_link_add_like', TRUE)) { // Switch to control this behavior.
+-      $url = fb_scrub_urls(url('node/' . $object->nid, array('absolute' => TRUE)));
++      $url = fb_scrub_urls(url('node/' . $node->nid, array('absolute' => TRUE)));
+       $items['dff_like'] = array(
+-        'title' => "<fb:like send=\"true\" ref=\"node/$object->nid\" href={$url}></fb:like>",
++        'title' => "<fb:like send=\"true\" ref=\"node/$node->nid\" href={$url}></fb:like>",
+         'html' => TRUE,
+       );
+     }
+@@ -29,6 +29,17 @@
+   }
+ }
+ 
++/**
++ * Implements hook_node_view().
++ */
++function fb_example_node_view($node, $view_mode) {
++  $links = fb_example_XFMBL_like_button($node, $view_mode == 'teaser');
++  $node->content['links']['fb_example'] = array(
++    '#theme' => 'links__node__fb_example',
++    '#links' => $links,
++    '#attributes' => array('class' => array('links', 'inline')),
++  );
++}
+ 
+ /**
+  * Implements hook_fb_friend_invite_page_wrap_alter().
+@@ -46,7 +57,9 @@
+ function fb_example_fb_friend_invite_page_wrap_alter(&$elem) {
+   // Replace serverfbml with popup
+   if ($elem['#type'] == 'fb_form_serverfbml') {
++    unset($elem['#theme_wrappers']);
+     $elem['#type'] = 'fb_fbml_popup';
++    $elem['#theme'] = 'fb_fbml_popup';
+     $elem['#title'] = t('Invite Friends to View This Page');
+     $elem['#link_text'] = t('Invite friends to view this page');
+     $elem['#attributes'] = array('width' => 760);
+@@ -80,10 +93,10 @@
+  * facebook users know that content may be published to their Wall,
+  * and gives them a chance to prevent that.
+  */
+-function fb_example_form_alter(&$form, $form_state, $form_id) {
++function fb_example_form_alter(&$form, &$form_state, $form_id) {
+   // Add stream publish option.
+   if (isset($GLOBALS['_fb']) && fb_facebook_user()) {
+-    if ($form['#id'] == 'node-form') {
++   if (strstr($form['#id'], 'node-form')) {
+       // Add checkbox to control feed publish.
+       $form['fb_example']['stream_publish'] = array(
+         '#type' => 'checkbox',
+@@ -91,11 +104,11 @@
+         '#default_value' => TRUE,
+       );
+     }
+-    elseif ($form['form_id']['#value'] == 'comment_form') {
++    else if ($form['#id'] == 'comment-form') {
+       // Add checkbox to control feed publish.
+       $form['fb_example']['stream_publish'] = array(
+         '#type' => 'checkbox',
+-        '#title' => t('Share on Facebook'),
++        '#title' => t('Share your comment on Facebook'),
+         '#default_value' => TRUE,
+       );
+     }
+@@ -103,55 +116,50 @@
+ }
+ 
+ /**
+- * Implements hook_nodeapi().
+- *
+- * Publish to facebook Walls when users submit nodes.
++ * Publishes a node to facebook Walls.
+  *
+  * @see http://developers.facebook.com/docs/reference/rest/stream.publish
+  * @see http://developers.facebook.com/docs/guides/attachments
+  */
+-function fb_example_nodeapi(&$node, $op, $a3 = NULL, $a4 = NULL) {
+-  if ($op == 'insert' || $op == 'update') {
+-    if (isset($node->stream_publish) && $node->stream_publish) {
+-      $attachment = array(
+-        'name' => $node->title,
+-        'href' => url('node/' . $node->nid, array('absolute' => TRUE)),
+-        'description' => filter_xss($node->teaser, array()),
++function fb_example_stream_publish_node(&$node) {
++  if (!empty($node->stream_publish)) {
++    // Fetch all the body fields from the node with the current node language
++    $items = field_get_items('node', $node, 'body', $node->language);
++    // Use the first body field found and extract the teaser from it
++    $teaser = $items[0]['summary'];
++    $attachment = array(
++      'name' => $node->title,
++      'href' => url('node/' . $node->nid, array('absolute' => TRUE)),
++      'description' => filter_xss($teaser, array()),
++    );
++    /*
++      if ($picture = $GLOBALS['user']->picture) {
++      $url = url($picture, array('absolute' => TRUE));
++      $attachment['media'][] = array(
++      'type' => 'image',
++      'src' => $url,
++      'href' => $url,
+       );
+-
+-      /*
+-        if ($picture = $GLOBALS['user']->picture) {
+-        $url = url($picture, array('absolute' => TRUE));
+-        $attachment['media'][] = array(
++      }
++    */
++    if ($logo_path = theme_get_setting('logo_path')) {
++      $url = url($logo_path, array('absolute' => TRUE));
++      $attachment['media'][] = array(
+         'type' => 'image',
+         'src' => $url,
+         'href' => $url,
+-        );
+-        }
+-      */
+-      if ($logo_path = theme_get_setting('logo_path')) {
+-        $url = url($logo_path, array('absolute' => TRUE));
+-        //dpm($logo_path, "logo_path is $logo_path and url is $url");
+-        $attachment['media'][] = array(
+-          'type' => 'image',
+-          'src' => $url,
+-          'href' => $url,
+-        );
+-      }
+-
+-
+-      $user_message = t('Check out my latest post on !site...',
+-                        array('!site' => variable_get('site_name', t('my Drupal for Facebook powered site'))));
+-      $actions = array();
+-      $actions[] = array(
+-        'text' => t('Read More'),
+-        'href' => url('node/' . $node->nid, array('absolute' => TRUE)),
+       );
+-      fb_stream_publish_dialog(array('message' => $user_message,
+-                                     'attachment' => $attachment,
+-                                     'action_links' => $actions,
+-                               ));
+     }
++
++    $user_message = t('Check out my latest post on !site...', array('!site' => variable_get('site_name', t('my Drupal for Facebook powered site'))));
++    $actions = array();
++    $actions[] = array(
++      'text' => t('Read More'),
++      'href' => url('node/' . $node->nid, array('absolute' => TRUE)),
++    );
++    fb_stream_publish_dialog(array('message' => $user_message,
++                                   'attachment' => $attachment,
++                                   'action_links' => $actions));
+   }
+ 
+   // Another way to add like button, as part of a node.
+@@ -167,48 +175,68 @@
+ }
+ 
+ /**
+- * Implementation of hook_comment().
+- *
+- * Publish to facebook Walls when users submit comments.
++ * Implements hook_node_insert().
+  */
+-function fb_example_comment(&$a1, $op) {
+-  if ($op == 'insert' || $op == 'update') {
+-    if ($a1['stream_publish']) {
+-      //dpm($a1, "fb_example_comment, publishing to stream");
+-      $node = node_load($a1['nid']);
++function fb_example_node_insert($node) {
++ fb_example_stream_publish_node($node);
++}
+ 
+-      // http://wiki.developers.facebook.com/index.php/Attachment_(Streams)
+-      $attachment = array(
+-        'name' => $a1['subject'],
+-        'href' => url('node/' . $a1['nid'], array('absolute' => TRUE, 'fragment' => 'comment-' . $a1['cid'])),
+-        'description' => $a1['comment'],
+-        //'properties' => array(t('In reply to') => array('text' => $node->title, 'href' => url("node/" . $node->nid, array('absolute' => TRUE)))),
++/**
++ * Implements hook_node_update().
++ */
++function fb_example_node_update($node) {
++ fb_example_stream_publish($node);
++}
++
++/**
++ * Publishes comments to facebook Walls.
++ */
++function fb_example_stream_publish_comment(&comment) {
++  if (!empty($comment->stream_publish)) {
++    $node = node_load($comment->nid);
++
++    // http://wiki.developers.facebook.com/index.php/Attachment_(Streams)
++    $attachment = array(
++      'name' => $a1->subject,
++      'href' => url('node/' . $a1->nid, array('absolute' => TRUE, 'fragment' => 'comment-' . $a1->cid)),
++      'description' => $a1->comment,
++      //'properties' => array(t('In reply to') => array('text' => $node->title, 'href' => url("node/" . $node->nid, array('absolute' => TRUE)))),
++    );
++
++    if ($logo_path = theme_get_setting('logo_path')) {
++      $url = url($logo_path, array('absolute' => TRUE));
++      $attachment['media'][] = array(
++        'type' => 'image',
++        'src' => $url,
++        'href' => $url,
+       );
+-
+-      if ($logo_path = theme_get_setting('logo_path')) {
+-        $url = url($logo_path, array('absolute' => TRUE));
+-        //dpm($logo_path, "logo_path is $logo_path and url is $url");
+-        $attachment['media'][] = array(
+-          'type' => 'image',
+-          'src' => $url,
+-          'href' => $url,
+-        );
+-      }
+-
+-      $user_message = t('Check out my latest comment on !site...',
+-                        array('!site' => variable_get('site_name', t('my Drupal for Facebook powered site'))));
+-      $actions = array();
+-      $actions[] = array('text' => t('Read More'),
+-                         'href' => url('node/' . $a1['nid'], array('absolute' => TRUE)),
+-      );
+-      fb_stream_publish_dialog(array('message' => $user_message,
+-                                     'attachment' => $attachment,
+-                                     'action_links' => $actions,
+-                               ));
+     }
++
++    $user_message = t('Check out my latest comment on !site...', array('!site' => variable_get('site_name', t('my Drupal for Facebook powered site'))));
++    $actions = array('text' => t('Read More'),
++                     'href' => url('node/' . $a1->nid, array('absolute' => TRUE)),
++    );
++    fb_stream_publish_dialog(array('message' => $user_message,
++                                   'attachment' => $attachment,
++                                   'action_links' => $actions,
++                             ));
+   }
+ }
+ 
++
++/**
++ * Implements hook_comment_insert().
++ */
++function fb_example_comment_insert($comment) {
++ fb_example_comment($comment);
++}
++
++/**
++ * Implements hook_comment_update().
++ */
++function fb_example_comment_update($comment) {
++ fb_example_comment($comment);
++}
+ 
+ /**
+  * Implements hook_fb_required_perms_alter().
+@@ -399,4 +427,4 @@
+       }
+     }
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/contrib/fb_friend.info b/contrib/fb_friend.info
+index 8ffe311..a7c7fed 100644
+--- a/contrib/fb_friend.info
++++ b/contrib/fb_friend.info
+@@ -1,8 +1,7 @@
+ name = FB Friend Features
+ description = (fb_friend.module) Blocks for showing the current user's friends, sending them requests, etc.
+ package = Drupal for Facebook - contrib
+-core = 6.x
++core = 7.x
+ dependencies[] = fb
+ dependencies[] = fb_form
+ dependencies[] = fb_app
+-
+diff --git a/contrib/fb_friend.module b/contrib/fb_friend.module
+index 0e70388..be41f3e 100644
+--- a/contrib/fb_friend.module
++++ b/contrib/fb_friend.module
+@@ -9,23 +9,23 @@
+  * customize the markup.  Implementing those alter hooks is
+  * the best way to change any aspects of the invite form.
+  */
+-//// Block deltas
++// Block deltas
+ define('FB_FRIEND_DELTA_AUTHORIZED', 'fb_friend_authorized');
+ define('FB_FRIEND_DELTA_INVITE_PAGE', 'fb_friend_invite_page');
+ define('FB_FRIEND_DELTA_INVITE_APP', 'fb_friend_invite_app');
+ 
+-//// Menu paths
++// Menu paths
+ define('FB_FRIEND_PATH_REQUEST_SUBMIT', 'fb_friend/submit');
+ define('FB_FRIEND_PATH_REQUEST_SUBMIT_ARGS', 2);
+ define('FB_FRIEND_PATH_REQUEST_ACCEPT', 'fb_friend/accept');
+ define('FB_FRIEND_PATH_REQUEST_ACCEPT_ARGS', 2);
+ 
+-//// Hook_fb_friend operations
++// Hook_fb_friend operations
+ define('FB_FRIEND_OP_REQUEST_SUBMIT', 'fb_friend_request_submit');
+ define('FB_FRIEND_OP_REQUEST_SKIP', 'fb_friend_request_skip');
+ define('FB_FRIEND_OP_REQUEST_ACCEPT', 'fb_friend_request_accept');
+ 
+-//// Request/invite status
++// Request/invite status
+ define('FB_FRIEND_STATUS_REQUEST_ACCEPTED', 2);
+ 
+ function fb_friend_menu() {
+@@ -147,166 +147,32 @@
+  * Blocks include
+  * - Invite friends to install the application.
+  * - Invite friends to visit the page currently being browsed.
+- * - Show which friends are already users of the current application.
+- *
++ * - Show which friends are already users of the c
++
++
++/**
++ * Implements hook_block_view().
+  */
+-function fb_friend_block($op = 'list', $delta = 0, $edit = array()) {
+-  if ($op == 'list') {
+-    $items = array();
+-    // Blocks which use the current application.
+-    $items[FB_FRIEND_DELTA_INVITE_PAGE] = array(
+-      'info' => t('Invite Facebook friends to current page'),
+-    );
+-    $items[FB_FRIEND_DELTA_INVITE_APP] = array(
+-      'info' => t('Invite Facebook friends to install the current app'),
+-    );
+-    $items[FB_FRIEND_DELTA_AUTHORIZED] = array(
+-      'info' => t('Facebook friends who have authorized the current app'),
+-    );
+-
+-    return $items;
+-  }
+-  elseif ($op == 'view') {
+-    try { // Calls to facebook can fail.
+-
++function fb_friend_block_view($delta = '') {
++ try { // Calls to facebook can fail.
+       // None of our blocks are shown if user is not logged in.
+       $fbu = fb_facebook_user();
+       if (!$fbu)
+         return;
+ 
+-      // Our blocks use current application
+-      global $_fb, $_fb_app;
+-
+       if ($delta == FB_FRIEND_DELTA_INVITE_PAGE) {
+-        $content = fb_friend_request_content(
+-          array(
+-            'module' => 'fb_friend_invite_page',
+-            'delta' => FB_FRIEND_DELTA_INVITE_PAGE,
+-          ), array(
+-            'hook' => 'fb_friend_invite_page',
+-            'invite' => TRUE,
+-            'action_path' => request_path(), // Where sender goes on submit or skip.
+-            'accept_path' => request_path(), // Where recipient goes on accept.
+-          ));
+-
+-        return array('subject' => t('Invite friends to visit this page'),
+-                     'content' => drupal_render($content),
+-        );
++        fb_friend_friends_installed_apllication_block();
+       }
+-      elseif ($delta == FB_FRIEND_DELTA_INVITE_APP) {
+-        // Exclude users who have already installed.
+-        $rs = fb_fql_query($_fb, "SELECT uid FROM user WHERE has_added_app=1 and uid IN (SELECT uid2 FROM friend WHERE uid1 = $fbu)"); // FQL not SQL, no {curly_brackets}
+-        $exclude_ids = array();
+-        //  Build an delimited list of users...
+-        if ($rs) {
+-          foreach ($rs as $data) {
+-            $exclude_ids[] = $data["uid"];
+-          }
+-        }
+-
+-        $content = fb_friend_request_content(
+-          array(
+-            'module' => 'fb_friend_invite_app',
+-            'delta' => FB_FRIEND_DELTA_INVITE_APP,
+-            'next' => request_path(),
+-          ), array(
+-            'hook' => 'fb_friend_invite_app',
+-            'invite' => TRUE,
+-            'title' => variable_get('site_name', $GLOBALS['_fb_app']->title),
+-            'exclude_ids' => $exclude_ids,
+-          ));
+-
+-        return array('subject' => t('Invite friends to this application'),
+-                     'content' => drupal_render($content),
+-        );
+-      }
+-      elseif ($delta == FB_FRIEND_DELTA_INVITE_APP && FALSE) {
+-        // Old way...
+-        $app_url = url('<front>', array('absolute' => TRUE, 'fb_canvas' => fb_is_canvas()));
+-        $page_url = url(request_path(), array('absolute' => TRUE, 'fb_canvas' => fb_is_canvas()));
+-        $site_name = variable_get('site_name', t('application'));
+-        // Build the alterable data structure.
+-        // http://wiki.developers.facebook.com/index.php/Fb:request-form
+-        $fbml = fb_form_requestform(
+-          array(
+-            'type' => $site_name,
+-            'content' => array(
+-              'markup' => array('#value' => t('You may like this site - <a href="!url">!site</a>.',
+-                                              array('!url' => $app_url,
+-                                                    '!site' => $site_name))),
+-              'choice' => array('#type' => 'fb_form_req_choice',
+-                                '#attributes' => array(
+-                                  'url' => $app_url,
+-                                  'label' => t('Accept'))),
+-            ),
+-            'invite' => TRUE,
+-            'action' => $page_url,
+-            'method' => 'POST',
+-          ));
+-
+-        // Exclude users who have already installed.
+-        $rs = fb_fql_query($_fb, "SELECT uid FROM user WHERE has_added_app=1 and uid IN (SELECT uid2 FROM friend WHERE uid1 = $fbu)"); // FQL not SQL, no {curly_brackets}
+-        // @TODO - confirm new API returns same data structure in $rs!
+-        $arFriends = '';
+-        $exclude_ids = '';
+-        //  Build an delimited list of users...
+-        if ($rs) {
+-          $exclude_ids .= $rs[0]["uid"];
+-          for ( $i = 1; $i < count($rs); $i++ ) {
+-            if ( $exclude_ids != "" )
+-              $exclude_ids .= ",";
+-            $exclude_ids .= $rs[$i]["uid"];
+-          }
+-        }
+-
+-        $fbml['selector'] = fb_form_multi_selector(
+-          array('actiontext' => t('Invite friends'),
+-                'exclude_ids' => $exclude_ids,
+-          ));
+-
+-        // Allow third-party to modify the form
+-        drupal_alter('fb_friend_invite_app', $fbml);
+-
+-        if ($fbml) {
+-          // Wrap in serverfbml.
+-          $xfbml = array('#type' => 'fb_form_serverfbml',
+-                         'fbml' => $fbml);
+-        }
+-        // Allow third-party to modify wrapper
+-        drupal_alter('fb_friend_invite_app_wrap', $xfbml);
+-
+-        $content = drupal_render($xfbml);
+-        return array('subject' => t('Invite friends to use !site',
+-                                    array('!site' => $site_name)),
+-                     'content' => $content,
+-        );
+-
++      elseif ($delta == FB_FRIEND_DELTA_INVITE_APP ) {
++        fb_friend_invite_friends_apllication_block();
+       }
+       elseif ($delta == FB_FRIEND_DELTA_AUTHORIZED) {
+-        if ($fbu = fb_facebook_user()) {
+-          // Get list of friends who have authorized this app.
+-          $rs = fb_fql_query($_fb, "SELECT uid FROM user WHERE has_added_app=1 AND uid IN (SELECT uid2 FROM friend WHERE uid1 = $fbu)"); // FQL not SQL, no {curly_brackets}
+-          // @TODO - confirm the data structure returned from new API still works with this code.
+-          if (isset($rs) && is_array($rs)) {
+-            foreach ($rs as $friend_data) {
+-              $friend_fbu = $friend_data['uid'];
+-              // TODO: make size and markup configurable
+-              $content .= "<fb:profile-pic uid={$friend_fbu} size=square></fb:profile-pic>";
+-            }
+-          }
+-
+-          $subject = t('Friends who use !app', array(
+-                       '!app' => $GLOBALS['_fb_app']->label));  // TODO - fix title
+-
+-          return array(
+-            'subject' => $subject,
+-            'content' => $content);
+-        }
++        fb_friend_friends_installed_apllication_block();
+       }
+     }
+     catch (Exception $e) {
+       // We reach this when Facebook Connect sessions are no longer valid.
+-      // Javascript should detect this and refresh.  Relatively harmless.
++      // Javascript should detect this and refresh. Relatively harmless.
+       if (fb_verbose() === 'extreme') {
+         fb_log_exception($e, t('Failed to render fb_friend block.'));
+       }
+@@ -314,6 +180,169 @@
+   }
+ }
+ 
++/**
++ * Helper function for hook_block_view.
++ *
++ * Adds a block to show all your friends installed the application.
++ */
++function fb_friend_friends_installed_apllication_block() {
++  $content = fb_friend_request_content(
++    array(
++      'module' => 'fb_friend_invite_page',
++      'delta' => FB_FRIEND_DELTA_INVITE_PAGE,
++    ), array(
++      'hook' => 'fb_friend_invite_page',
++      'invite' => TRUE,
++      'action_path' => fb_scrub_urls($_GET['q']), // Where sender goes on submit or skip.
++      'accept_path' => fb_scrub_urls($_GET['q']), // Where recipient goes on accept.
++    ));
++  return array('subject' => t('Invite friends to visit this page'),
++               'content' => drupal_render($content),
++  );
++}
++
++/**
++ * Helper function for hook_block_view.
++ *
++ * Invite your friends to view this page.
++ */
++function fb_friend_invite_friends_view_page_block() {
++  // Our blocks use current application
++  global $_fb;
++
++  if ($fbu = fb_facebook_user()) {
++    // Get list of friends who have authorized this app.
++    $rs = fb_fql_query($_fb, "SELECT uid FROM user WHERE has_added_app=1 AND uid IN (SELECT uid2 FROM friend WHERE uid1 = $fbu)"); // FQL not SQL, no {curly_brackets}
++    // @TODO - confirm the data structure returned from new API still works with this code.
++    if (isset($rs) && is_array($rs)) {
++     $content = "";
++      foreach ($rs as $friend_data) {
++        $friend_fbu = $friend_data['uid'];
++        // TODO: make size and markup configurable
++        $content .= "<fb:profile-pic uid={$friend_fbu} size=square></fb:profile-pic>";
++      }
++    }
++    $subject = t('Friends who use !app', array(
++                 '!app' => $GLOBALS['_fb_app']->label));  // TODO - fix title
++
++    return array(
++      'subject' => $subject,
++      'content' => $content);
++  }
++}
++
++/**
++ * Helper function for hook_block_view.
++ *
++ * Adds a block to invite friends to install the application.
++ */
++function fb_friend_invite_friends_apllication_block() {
++  // Our blocks use current application
++  global $_fb;
++
++  // Exclude users who have already installed.
++  $rs = fb_fql_query($_fb, "SELECT uid FROM user WHERE has_added_app=1 and uid IN (SELECT uid2 FROM friend WHERE uid1 = $fbu)"); // FQL not SQL, no {curly_brackets}
++  $exclude_ids = array();
++
++  //  Build an delimited list of users...
++  if ($rs) {
++    foreach ($rs as $data) {
++      $exclude_ids[] = $data["uid"];
++    }
++  }
++
++  $content = fb_friend_request_content(
++    array(
++      'module' => 'fb_friend_invite_app',
++      'delta' => FB_FRIEND_DELTA_INVITE_APP,
++      'next' => request_path(),
++    ), array(
++      'hook' => 'fb_friend_invite_app',
++      'invite' => TRUE,
++      'title' => variable_get('site_name', $GLOBALS['_fb_app']->title),
++      'exclude_ids' => $exclude_ids,
++    ));
++
++  return array('subject' => t('Invite friends to this application'),
++               'content' => drupal_render($content),
++  );
++
++  // DEPRECATED
++
++  /**
++  $app_url = url('<front>', array('absolute' => TRUE, 'fb_canvas' => fb_is_canvas()));
++  $page_url = url(request_path(), array('absolute' => TRUE, 'fb_canvas' => fb_is_canvas()));
++  $site_name = variable_get('site_name', t('application'));
++  // Build the alterable data structure.
++  // http://wiki.developers.facebook.com/index.php/Fb:request-form
++  $fbml = fb_form_requestform(
++    array(
++      'type' => $site_name,
++      'content' => array(
++        'markup' => array('#value' => t('You may like this site - <a href="!url">!site</a>.',
++                                        array('!url' => $app_url,
++                                              '!site' => $site_name))),
++        'choice' => array('#type' => 'fb_form_req_choice',
++                          '#attributes' => array(
++                            'url' => $app_url,
++                            'label' => t('Accept'))),
++      ),
++      'invite' => TRUE,
++      'action' => $page_url,
++      'method' => 'POST',
++    ));
++
++  // Exclude users who have already installed.
++  $rs = fb_fql_query($_fb, "SELECT uid FROM user WHERE has_added_app=1 and uid IN (SELECT uid2 FROM friend WHERE uid1 = $fbu)"); // FQL not SQL, no {curly_brackets}
++  // @TODO - confirm new API returns same data structure in $rs!
++  $arFriends = '';
++  $exclude_ids = '';
++  //  Build an delimited list of users...
++  if ($rs) {
++    $exclude_ids .= $rs[0]["uid"];
++    for ( $i = 1; $i < count($rs); $i++ ) {
++      if ( $exclude_ids != "" )
++        $exclude_ids .= ",";
++      $exclude_ids .= $rs[$i]["uid"];
++    }
++  }
++
++  $fbml['selector'] = fb_form_multi_selector(
++    array('actiontext' => t('Invite friends'),
++          'exclude_ids' => $exclude_ids,
++    ));
++
++  // Allow third-party to modify the form
++  drupal_alter('fb_friend_invite_app', $fbml);
++
++  if ($fbml) {
++    // Wrap in serverfbml.
++    $xfbml = array('#type' => 'fb_form_serverfbml',
++                   'fbml' => $fbml);
++  }
++  // Allow third-party to modify wrapper
++  drupal_alter('fb_friend_invite_app_wrap', $xfbml);
++
++  $content = drupal_render($xfbml);
++  return array('subject' => t('Invite friends to use !site',
++                              array('!site' => $site_name)),
++               'content' => $content,
++  );
++  */
++}
++
++/**
++ * Implements hook_block_info().
++ */
++function fb_friend_block_info() {
++  $items = array();
++  // Blocks which use the current application.
++  $items[FB_FRIEND_DELTA_INVITE_PAGE]['info'] = t('Invite Facebook friends to current page');
++  $items[FB_FRIEND_DELTA_INVITE_APP]['info'] = t('Invite Facebook friends to install the current app');
++  $items[FB_FRIEND_DELTA_AUTHORIZED]['info'] = t('Facebook friends who have authorized the current app');
++
++  return $items;
++}
+ 
+ /**
+  * Implements hook_fb_friend().
+@@ -441,16 +470,17 @@
+   $accept_url = url($params['accept_path'], array('absolute' => TRUE, 'fb_canvas' => fb_is_canvas()));
+ 
+   // Learn which users to exclude
+-  $result = db_query("SELECT fbu_target FROM {fb_friend} WHERE module='%s' AND fbu_actor=%d AND ref_id=%d",
+-                     $params['module'], fb_facebook_user(), $params['ref_id']);
+-  while ($data = db_fetch_object($result)) {
+-    $params['exclude_ids'][] = $data->fbu_target;
+-  }
++  $result = db_query("SELECT fbu_target FROM {fb_friend} WHERE module=:module AND fbu_actor=:fbu_actor AND ref_id=:ref_id",
++                     array( ':module'     =>  $params['module'],
++                            ':fbu_actor'  =>  fb_facebook_user(),
++                            ':ref_id'     =>  $params['ref_id']));
++  foreach ($result as $data) {
++     $params['exclude_ids'][] = $data->fbu_target;
++   }
+ 
+   if (!$params['title']) {
+     $params['title'] = variable_get('site_name', $GLOBALS['_fb_app']->title);
+   }
+-
+   //dpm($params['exclude_ids'], "exclude_ids"); // debug
+   // Build the alterable data structure.
+   // http://developers.facebook.com/docs/reference/fbml/request-form
+@@ -459,10 +489,11 @@
+       'type' => $params['type'],
+       'style' => $params['style'],
+       'content' => array(
+-        'markup' => array('#value' => t($params['text'],
++        'markup' => array('#markup' => t($params['text'],
+                                         array('!url' => $accept_url,
+                                               '!title' => t($params['title'])))),
+         'choice' => array('#type' => 'fb_form_req_choice',
++                         '#theme_wrappers' => Array ('fb_form_req_choice'),
+                           '#attributes' => array(
+                             'url' => $accept_url,
+                             'label' => t($params['accept_text']))),
+@@ -472,7 +503,6 @@
+       'method' => 'POST',
+       'target' => $params['target'],
+     ));
+-
+ 
+   $fbml['selector'] = fb_form_multi_selector(
+     array(
+@@ -497,21 +527,19 @@
+     // Wrap in serverfbml.
+     $xfbml = array(
+       '#type' => 'fb_form_serverfbml',
++     '#theme_wrappers'=> array('fb_form_serverfbml'),
+       'fbml' => $fbml,
+       '#prefix' => '<div class="fb-request-form">',
+       '#suffix' => '</div>',
+     );
+ 
+-    // Allow third-party to modify wrapper
++    // Allow third-party to modify wrappe
+     if ($params['hook']) {
+       drupal_alter($params['hook'] . '_wrap', $xfbml);
+     }
+     return $xfbml;
+   }
+ }
+-
+-
+-
+ 
+ function fb_friend_write_record(&$row, $update = array()) {
+   if (!isset($row['created']))
+diff --git a/fb.module b/fb.module
+index b7deaea..9a2edc3 100644
+--- a/fb.module
++++ b/fb.module
+@@ -1441,7 +1441,8 @@
+       'file' => 'fb.theme.inc',
+     ),
+     'fb_fbml_popup' => array(
+-      'arguments' => array('elements' => NULL),
++      //'arguments' => array('elements' => NULL), <-- OLD D6 code
++   'render element' => 'element', // new code for D7
+       'file' => 'fb.theme.inc',
+     ),
+     'fb_login_button' => array(
+diff --git a/fb.theme.inc b/fb.theme.inc
+index 5b59806..2ba44db 100644
+--- a/fb.theme.inc
++++ b/fb.theme.inc
+@@ -81,16 +81,15 @@
+   return $wrap_pre . $fbml . $wrap_post;
+ }
+ 
+-
+-function theme_fb_fbml_popup($elem) {
+-  // Hide this markup until javascript shows it.
++function theme_fb_fbml_popup($variables) {
++ $elem = $variables['element'];
++ // Hide this markup until javascript shows it.
+   $t = '<div class="fb_fbml_popup_wrap" style="display:none;" ' . ">\n";
+-
+   $t .= '<a href="#" title="' . check_plain($elem['#title']) . '" ' .
+     (isset($elem['#link_attributes']) ? drupal_attributes($elem['#link_attributes']) : '') .
+     '>' . check_plain($elem['#link_text']) . '</a>';
+   $t .= '<div class="fb_fbml_popup" ' . drupal_attributes($elem['#attributes']) . '>';
+-  $t .= $elem['#children'];
++  $t .= drupal_render_children($elem);
+   $t .= "</div></div>\n";
+   return $t;
+ }
+diff --git a/fb_connect.js b/fb_connect.js
+index a5fef5c..27e3ca9 100644
+--- a/fb_connect.js
++++ b/fb_connect.js
+@@ -69,9 +69,9 @@
+  * Move new dialogs to visible part of screen.
+  **/
+ FB_Connect.centerPopups = function() {
+-  var scrollTop = $(window).scrollTop();
+-  $('.fb_dialog:not(.fb_popup_centered)').each(function() {
+-    var offset = $(this).offset();
++  var scrollTop = jQuery(window).scrollTop();
++  jQuery('.fb_dialog:not(.fb_popup_centered)').each(function() {
++    var offset = jQuery(this).offset();
+     if (offset.left == 0) {
+       // This is some facebook cruft that cannot be centered.
+     }
+@@ -79,8 +79,8 @@
+       // Not yet visible, don't center.
+     }
+     else if (offset.top < scrollTop) {
+-      $(this).css('top', offset.top + scrollTop + 'px');
+-      $(this).addClass('fb_popup_centered'); // Don't move this dialog again.
++      jQuery(this).css('top', offset.top + scrollTop + 'px');
++      jQuery(this).addClass('fb_popup_centered'); // Don't move this dialog again.
+     }
+   });
+ };
+@@ -90,13 +90,13 @@
+   // Support for easy fbml popup markup which degrades when javascript not enabled.
+   // Markup is subject to change.  Currently...
+   // <div class=fb_fbml_popup_wrap><a title="POPUP TITLE">LINK MARKUP</a><div class=fb_fbml_popup><fb:SOME FBML>...</fb:SOME FBML></div></div>
+-  jQuery('.fb_fbml_popup:not(.fb_fbml_popup-processed)', context).addClass('fb_fbml_popup-processed').prev().each(
++ jQuery('.fb_fbml_popup:not(.fb_fbml_popup-processed)', context).addClass('fb_fbml_popup-processed').prev().each(
+     function() {
+-      this.fbml_popup = $(this).next().html();
+-      this.fbml_popup_width = parseInt($(this).next().attr('width'));
+-      this.fbml_popup_height = parseInt($(this).next().attr('height'));
++      this.fbml_popup = jQuery(this).next().html();
++      this.fbml_popup_width = parseInt(jQuery(this).next().attr('width'));
++      this.fbml_popup_height = parseInt(jQuery(this).next().attr('height'));
+       //console.log("stored fbml_popup markup: " + this.fbml_popup); // debug
+-      $(this).next().remove(); // Remove FBML so facebook does not expand it.
++      jQuery(this).next().remove(); // Remove FBML so facebook does not expand it.
+     })
+     // Handle clicks on the link element.
+     .bind('click',
+diff --git a/fb_form.info b/fb_form.info
+index 08132db..271f12a 100644
+--- a/fb_form.info
++++ b/fb_form.info
+@@ -1,5 +1,5 @@
+ name = FB Forms
+ description = (fb_form.module) Build FBML form constructs such as <a href=http://developers.facebook.com/docs/guides/canvas/#requests target=_blank>requests</a> using Drupal's Form API.
+ package = Drupal for Facebook
++core = 7.x
+ dependencies[] = fb
+-core = 6.x
+\ No newline at end of file
+diff --git a/fb_form.module b/fb_form.module
+index 6259361..28114f5 100644
+--- a/fb_form.module
++++ b/fb_form.module
+@@ -12,7 +12,7 @@
+ // There's some obsolete and experimental code in this module.  Everything may change!  Watch out for things labeled deprecated.
+ 
+ /**
+- * Implementation of hook_menu().
++ * Implements hook_menu().
+  */
+ function fb_form_menu() {
+   $items = array();
+@@ -31,12 +31,12 @@
+ }
+ 
+ /**
+- * Implementation of hook_form_alter().
++ * Implements of hook_form_alter().
+  */
+ function fb_form_form_alter(&$form, &$form_state, $form_id) {
+   /* Drupal allows no clean way to set $form['#type'], so we hack... */
+   if (isset($form['#fb_form_type_hack']) &&
+-      ($type = $form['#fb_form_type_hack'])) {
++    ($type = $form['#fb_form_type_hack'])) {
+     $form['#type'] = $type;
+     unset($form['#fb_form_type_hack']);
+   }
+@@ -54,11 +54,11 @@
+ function fb_form_invite_page() {
+   global $_fb, $_fb_app;
+ 
+-  if (!fb_is_fbml_canvas()) {
++  /*if (!fb_is_fbml_canvas()) {
+     drupal_set_message(t('Unable to display page.  FBML required.'), 'error');
+     drupal_not_found();
+     exit();
+-  }
++  }*/
+ 
+   if ($_fb_app) {
+     drupal_set_title(t('Invite friends to use %application',
+@@ -105,7 +105,9 @@
+ 
+   // Do we need to append &next=[someURL] to the url here?
+   $content .= "<fb:req-choice url=\"http://www.facebook.com/add.php?api_key={$_fb_app->apikey}\" label=\"" . t('Add !title application.',
+-                                                                                                              array('!title' => $_fb_app->label)) . "\" />";
++
++ array('!title' => $_fb_app->label)) . "\" />";
++
+ 
+   // form type fb:request-form
+   $form = array('#fb_form_type_hack' => 'fb_form_request', /* becomes #type during form_alter */
+@@ -121,7 +123,6 @@
+           '#title' => t('Select the friends to invite.'),
+           '#attributes' => array('exclude_ids' => $arFriends),
+     );
+-
+   return $form;
+ }
+ 
+@@ -178,7 +179,7 @@
+   return $options;
+ }
+ 
+-function fb_form_elements() {
++function fb_form_element_info() {
+   $items = array();
+ 
+   $items['fb_form_serverfbml'] = array(
+@@ -371,47 +372,53 @@
+ }
+ 
+ function fb_form_theme() {
+-  return array(
++ $items = array(
+     'fb_form_multi_friend_selector' => array(
+-      'arguments' => array('elements' => NULL),
++      'render element' => 'element',
+     ),
+     'fb_form_requestform' => array(
+-      'arguments' => array('elements' => NULL),
++      'render element' => 'element',
+     ),
+     'fb_form_req_choice' => array(
+-      'arguments' => array('elements' => NULL),
++      'render element' => 'element',
+     ),
+     'fb_form_serverfbml' => array(
+-      'arguments' => array('elements' => NULL),
++      'render element' => 'element',
+     ),
+   );
++  return $items;
+ }
+ 
+-function theme_fb_form_multi_friend_selector($elements) {
++function theme_fb_form_multi_friend_selector($variables) {
++ $elements = $variables['element'];
+   $output = "<fb:multi-friend-selector " . drupal_attributes($elements['#attributes']) . ">" .
+     (isset($elements['#children']) ? $elements['#children'] : '') .
+     "</fb:multi-friend-selector>\n";
+   return $output;
+ }
+ 
+-function theme_fb_form_requestform($elements) {
+-  // content attribute is special.
++function theme_fb_form_requestform($variables) {
++ $elements = $variables['element'];
++ // content attribute is special.
+   if (is_array($elements['#attributes']['content'])) {
+     $elements['#attributes']['content'] = drupal_render($elements['#attributes']['content']);
+   }
+-  $output = "<fb:request-form " . drupal_attributes($elements['#attributes']) . ">".
++ $output = "<fb:request-form " . drupal_attributes($elements['#attributes']) . ">".
+     (isset($elements['#children']) ? $elements['#children'] : '') .
+     "</fb:request-form>\n";
++
+   return $output;
+ }
+ 
+-function theme_fb_form_req_choice($elements) {
++function theme_fb_form_req_choice($variables) {
++ $elements = $variables['element'];
+   // This special tag has no children
+   $output = "<fb:req-choice " . drupal_attributes($elements['#attributes']) . " />\n";
+   return $output;
+ }
+ 
+-function theme_fb_form_serverfbml($elements) {
++function theme_fb_form_serverfbml($variables) {
++ $elements = $variables['element'];
+   $output = '<fb:serverfbml ' . (isset($elements['#attributes']) ? drupal_attributes($elements['#attributes']) : '') . '><script type="text/fbml">' .
+     $elements['#children'] . "</script></fb:serverfbml>\n";
+   return $output;
+@@ -421,6 +428,7 @@
+ function fb_form_multi_selector($attrs = array()) {
+   $element = array(
+     '#type' => 'fb_form_multi_friend_selector',
++   '#theme_wrappers'=> array('fb_form_multi_friend_selector'),
+     '#attributes' => $attrs,
+   );
+   return $element;
+@@ -432,6 +440,7 @@
+ function fb_form_requestform($attrs = array()) {
+   $element = array(
+     '#type' => 'fb_form_requestform',
++   '#theme_wrappers'=> array('fb_form_requestform'),
+     '#attributes' => $attrs,
+   );
+   return $element;
+diff --git a/fb_stream.info b/fb_stream.info
+index 2b3cba2..7e7ccfc 100644
+--- a/fb_stream.info
++++ b/fb_stream.info
+@@ -2,4 +2,4 @@
+ description = (fb_stream.module) APIs for posting to <a href=http://developers.facebook.com/docs/guides/canvas/#stream target=_blank>Facebook Streams</a> (a.k.a. News Feed or Wall)
+ package = Drupal for Facebook
+ dependencies[] = fb
+-core = 6.x
+\ No newline at end of file
++core = 7.x

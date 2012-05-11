@@ -1,0 +1,364 @@
+<?php
+
+define ('FACEBOOK_GRAPH_URL', 'https://graph.facebook.com');
+define ('SURF_BUDDIES_BLOCK', 'surf_buddies');
+define ('SURF_BUDDIES_CONTACT_BLOCK', 'surf_buddies_contacts');
+
+/**
+ * Implements hook_block_info(). 
+ */
+function surf_block_info() {
+  return array(
+    SURF_BUDDIES_BLOCK => array(
+      'info' => t('Surf Friends'),
+      'cache' => DRUPAL_CACHE_PER_USER,
+    ),
+    SURF_BUDDIES_CONTACT_BLOCK => array(
+      'info' => t('Contact Friends'),
+      'cache' => DRUPAL_CACHE_PER_USER,
+    ),
+  );
+}
+
+/**
+ * Implements hook_block_view(). 
+ * //, 'attributes' => array('onclick' => 'javascript:FB.ui({method:"feed", name:"Let\'s go for a surf!", to: ' . $record['fbu'] . '});return false')
+ */
+function surf_block_view($delta = '') {
+  switch ($delta) {
+    case SURF_BUDDIES_BLOCK:
+      $block = array();
+      $fbu = fb_facebook_user();
+      
+      if ($fbu) {
+        // cache these
+        $friends = surf_get_facebook_friends($fbu);
+        if (count($friends)) {
+          $records = _surf_county_recent_friends(array_keys($friends));
+          $output = '';
+          if (count($records)) {
+            $items = array();
+            foreach ($records as $record) {
+              $items[] = l(theme('image', array('path' => $friends[$record['fbu']]['pic_small'])), 
+                           $friends[$record['fbu']]['profile_url'],
+                           array('html' => TRUE)) . $friends[$record['fbu']]['name'] . " has posted " . l(format_plural($record['node_count'], '1 report', '@count reports'), 'user/' . $record['uid']);
+            }
+            $block['subject'] = t('Your Friends Have Been Surfing');
+            $block['content'] = array(
+              '#theme' => 'item_list',
+              '#items' => $items,
+              '#title' => t('Check out their surf reports.'),
+            );
+          }
+        }
+        return $block;
+      }
+      break;
+    case SURF_BUDDIES_CONTACT_BLOCK:
+      $block = array();
+      $fbu = fb_facebook_user();
+      global $_fb_app, $base_url;
+      $menu = menu_get_item();
+      
+      if ($fbu) {
+        $friends = surf_get_facebook_friends($fbu);
+        if (count($friends)) {
+          $terms = context_get('surf', 'terms');
+          if (isset($terms) && count($terms) && $terms != FALSE) {
+            foreach ($terms as $term) {
+              $recent_friends = _surf_county_recent_friends(array_keys($friends), $term->tid);
+              var_dump($recent_friends);
+              if (count($recent_friends)) {
+                $items = array();
+                foreach ($recent_friends as $friend) {
+                  $query = array(
+                    'app_id' => $_fb_app->apikey,
+                    'to' => $friend['fbu'], 
+                    'redirect_uri' => url($menu['href'], array('absolute' => TRUE)),
+                  );
+                  $items[] = l(theme('image', array('path' => $friends[$friend['fbu']]['pic_small'])), $friends[$friend['fbu']]['profile_url'], array('html' => TRUE)) . 
+                            l(t('Ask ' . $friends[$friend['fbu']]['name'] . ' to go for a surf!'), 'http://www.facebook.com/dialog/feed', array('query' => $query, 'external' => TRUE, 'attributes' => array('onclick' => 'javascript:FB.ui({method:"feed", to: ' . $friend['fbu'] . '});return false')));
+                  
+                }
+              }
+              $block['subject'] = t('Share the Stoke');
+              $block['content'] = array(
+                '#theme' => 'item_list',
+                '#items' => $items,
+                '#title' => t('Your friends have surfed here recently.'),
+              );
+            }
+          }
+        
+        }
+        return $block;
+      }
+      break;
+  }
+}
+
+/**
+ * Get a user's friends. Cache them to avoid an api call. 
+ */
+function surf_get_facebook_friends($fbu) {
+  global $_fb, $_fb_app;
+  $cache = cache_get("{$fbu}_friends");
+  if ($cache == FALSE) {  
+    $results = fb_fql_query($_fb, "SELECT uid, pic_small, name, profile_url FROM user WHERE has_added_app=1 AND uid IN (SELECT uid2 FROM friend WHERE uid1 = $fbu)");
+    $friends = array();
+    if (isset($results) && count($results)) {
+      foreach ($results as $result) {
+        $friends[(int)$result['uid']] = array(
+        	'name' => $result['name'],
+          'pic_small' => $result['pic_small'],
+          'profile_url' => $result['profile_url'],
+        );
+      }
+      // store friends in cache for 10 minutes
+      cache_set("{$fbu}_friends", $friends, 'cache', time() + 600);
+    }
+  }
+  else {
+    // get the friends from cache
+    $friends = $cache->data;
+  }
+  return $friends;
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter(). 
+ * surf_form_surf_report_node_form_alter
+ */
+function surf_form_surf_report_node_form_alter(&$form, &$form_state, $form_id) {
+  $fbu = fb_facebook_user();
+  // if set, then show an option to publish to stream - For node add only
+  if ($fbu && !isset($form_state['node']->nid)) {
+    $form['fb_publish'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Publish to Facebook'),
+      '#description' => t('Share my surf report with my friends.'),
+      '#default_value' => TRUE,
+    );
+  }
+}
+
+/**
+ * Implements hook_node_insert(). 
+ */
+function surf_node_insert($node) {
+  if (isset($node->fb_publish) && $node->fb_publish) {
+    // if fb_publish is set, then call graph_api
+    /*
+     *   "message": "#duck #food #duckseason http://instagr.am/p/Js6ZJmq3IT/",
+         "picture": "http://photos-f.ak.fbcdn.net/hphotos-ak-ash3/523918_10150819173700140_675955139_11976338_1749759321_s.jpg",
+         "link": "http://www.facebook.com/photo.php?fbid=10150819173700140&set=a.10150584188045140.429960.675955139&type=1",
+         "name": "Instagram Photos",
+         "icon": "http://static.ak.fbcdn.net/rsrc.php/v1/yz/r/StEh3RhPvjk.gif",
+     */
+    $fbu = fb_facebook_user();
+    $token = fb_get_token(NULL, $fbu);
+    
+    if ($fbu && !is_null($token)) {
+      $link = url('node/' . $node->nid, array('absolute' => TRUE));
+      $message = t('Just posted a surf report: ' . $node->title . ' ' .  $link);
+      
+      // todo: picture
+      // todo: fix up description
+      $description = truncate_utf8($node->body['und'][0]['value'], 250);
+
+      $graph_url = FACEBOOK_GRAPH_URL . "/{$fbu}/feed";
+      $result = drupal_http_request($graph_url, array(
+        'method' => 'POST',
+        'data' => 'access_token=' . $token . '&message=' . $message . '&description=' . $description . '&link=' . $link,
+      ));
+      // todo: check error
+    }
+    else {
+      drupal_set_message(t('Cannot publish to Facebook Feed.  Please contact administrator.'));
+    }
+  }  
+}
+
+/**
+ * Implements hook_taxonomy_term_load(). 
+ */
+function surf_taxonomy_term_load($terms) {
+  //$term = array_shift($terms);
+  context_set('surf', 'terms', $terms);
+}
+
+/**
+ * 
+ * Implements hook_ctools_plugin_api().
+ * Enter description here ...
+ * @param unknown_type $module
+ * @param unknown_type $api
+ */
+function surf_ctools_plugin_api($module, $api) {
+  if ($module == 'openlayers') {
+    switch ($api) {
+      case 'openlayers_layers':
+        return array('version' => 1);
+    }
+  }
+}
+
+/**
+ * Implements hook_openlayers_layers(). 
+ */
+function surf_openlayers_layers() {
+  $layers = array();
+  
+  // Surf Counties
+  $layer = new stdClass();
+  $layer->api_version = 1;
+  $layer->name = 'surf_layer';
+  $layer->title = t('California Counties');
+  $layer->description = t('County Locations');
+  
+  $layer->data = array(
+    'layer_type' => 'openlayers_layer_type_raw',
+  	'layer_handler' => 'openlayers_raw',
+    'projection' => array('4326'),
+    'baselayer' => FALSE,
+    'vector' => TRUE,
+    'features' => _surf_county_data(),
+  );
+  $layers[$layer->name] = $layer;
+  
+  // Single County
+  $layer = new stdClass();
+  $layer->api_version = 1;
+  $layer->name = 'surf_single_county';
+  $layer->title = t('Single County');
+  $layer->description = t('Displays a single county');
+  $layer->data = array(
+  	'layer_type' => 'openlayers_layer_type_raw',
+    'layer_handler' => 'openlayers_raw',
+    'projection' => array('4326'),
+    'baselayer' => FALSE,
+    'vector' => TRUE,
+  );
+  
+  // Single County
+  $terms = context_get('surf', 'terms');
+  if (isset($terms) && count($terms) && $terms != FALSE) {
+    // todo: add in Friend's surf check count
+    foreach ($terms as $term) {
+      $wkt = field_get_items('taxonomy_term', $term, 'field_county_lines');
+      $value = field_view_value('taxonomy_term', $term, 'field_county_lines', $wkt[0]);
+
+      $layer->data['features'][$term->tid] = array(
+    		'projection' => '4326',
+      	'attributes' => array(
+      	  'name' => $term->name,
+      	  'name_rendered' => $term->name,
+      	  'field_county_lines_rendered' => $value['#markup'],
+      		'field_county_lines' => $value['#markup'],
+      	),
+        'wkt' => $value['#markup'],
+      );
+      
+      // Add in your friends into the map
+      $fbu = fb_facebook_user();
+      if ($fbu) {
+        $friends = surf_get_facebook_friends($fbu);
+        $recent_friends = _surf_county_recent_friends(array_keys($friends), $term->tid);
+        if (count($recent_friends)) {
+          $layer->data['features'][$term->tid]['attributes']['description'] = count($recent_friends) . ' of your friends ' . format_plural(count($recent_friends), 'has', 'have') .  ' surfed here!';
+        } 
+      }
+    }
+  }
+  $layers[$layer->name] = $layer;
+  
+  return $layers;
+}
+
+function surf_openlayers_map_preprocess_alter(&$map = array()) {
+  
+  if (isset($map['map_name']) && $map['map_name'] == 'surf_region') {
+    $terms = context_get('surf', 'terms');
+    if (isset($terms) && count($terms) && $terms != FALSE) {
+      // todo: fix up the und call
+      $term = array_shift($terms);
+      $map['center']['initial']['centerpoint'] = "{$term->field_county_lines['und'][0]['lon']},{$term->field_county_lines['und'][0]['lat']}";
+    }
+  }
+}
+
+function _surf_county_by_friends() {
+  
+}
+
+function _surf_county_recent_friends($fb_ids, $tid = NULL) {
+  // todo: might be cool to filter this down to recent reports ? Maybe one day?
+  $users = array();
+  $query = db_select('node', 'n');
+  $query->join('users', 'u', 'n.uid=u.uid');
+  $query->join('fb_user', 'fbu', 'fbu.uid=u.uid');
+  $query->groupBy('fbu.uid');
+  if (count($fb_ids)) {
+    $query->condition('fbu', $fb_ids, 'IN');
+  }
+  
+  $query
+    ->fields('u', array('uid'))
+    ->fields('fbu', array('fbu'))
+    ->addExpression('count(n.nid)', 'node_count');
+  
+  if ($tid) {
+    $query->join('field_data_field_location', 'f', 'f.entity_id = n.nid');
+    $query->condition('f.field_location_tid', $tid, '=');
+  }
+  foreach ($query->execute() as $row) {
+    $users[$row->uid]['node_count'] = $row->node_count;
+    $users[$row->uid]['fbu'] = $row->fbu;
+    $users[$row->uid]['uid'] = $row->uid;
+  }
+  return $users;
+}
+
+function _surf_county_data() {
+
+  $query = db_select('field_data_field_location', 'f');
+  $query->join('taxonomy_term_data', 't', 'f.field_location_tid=t.tid');
+  $query->groupBy('t.tid');
+  $query->condition('t.vid', '2', '=');
+  $query
+  ->fields('t', array('tid'))
+  ->addExpression('count(t.tid)', 'counts');
+  
+  $reports = array();
+  foreach ($query->execute() as $row) {
+    $reports[$row->tid] = $row->counts;
+  }
+  
+  // get all the county locations, complete with Geo Data for mapping
+  $query = db_select('taxonomy_term_data', 't');
+  $query->join('field_data_field_county_lines', 'f', 'f.entity_id=t.tid');
+  $query->condition('t.vid', '2', '=');
+  $query
+    ->fields('t', array('tid', 'name'))
+    ->fields('f', array('field_county_lines_wkt'))
+    ->isNotNUll('field_county_lines_wkt');
+
+  
+  $features = array();
+  foreach ($query->execute() as $row) {
+    $features[$row->tid] = array(
+      'projection' => '4326',
+      'attributes' => array(
+        //'name_rendered' => l($row->name, 'taxonomy/term/' . $row->tid),
+    		'name' => $row->name,
+    		'description' => isset($reports[$row->tid]) ? l(format_plural($reports[$row->tid], '1 Report', '@count Reports'), 'taxonomy/term/' . $row->tid) : t('No Reports for this spot. Share some stoke and ') . l(t('add a surf report.'), 'node/add/surf-report'),
+    		'field_county_lines_rendered' => $row->field_county_lines_wkt,
+        'field_county_lines' => $row->field_county_lines_wkt,
+      ),
+      'wkt' => $row->field_county_lines_wkt,
+    );
+  }
+
+  return $features;
+}
+

@@ -1,0 +1,18 @@
+***************
+*** 1,8 ****
+  name = FB Friend Features
+  description = (fb_friend.module) Blocks for showing the current user's friends, sending them requests, etc.
+  package = Drupal for Facebook - contrib
+- core = 6.x
+  dependencies[] = fb
+  dependencies[] = fb_form
+  dependencies[] = fb_app
+- 
+--- 1,7 ----
+  name = FB Friend Features
+  description = (fb_friend.module) Blocks for showing the current user's friends, sending them requests, etc.
+  package = Drupal for Facebook - contrib
++ core = 7.x
+  dependencies[] = fb
+  dependencies[] = fb_form
+  dependencies[] = fb_app
