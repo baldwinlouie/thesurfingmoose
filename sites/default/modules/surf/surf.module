@@ -3,6 +3,7 @@
 define ('FACEBOOK_GRAPH_URL', 'https://graph.facebook.com');
 define ('SURF_BUDDIES_BLOCK', 'surf_buddies');
 define ('SURF_BUDDIES_CONTACT_BLOCK', 'surf_buddies_contacts');
+define ('SURF_REPORT_FULL_DAY', 'surf_report');
 
 /**
  * Implements hook_block_info(). 
@@ -16,6 +17,9 @@ function surf_block_info() {
     SURF_BUDDIES_CONTACT_BLOCK => array(
       'info' => t('Contact Friends'),
       'cache' => DRUPAL_CACHE_PER_USER,
+    ),
+    SURF_REPORT_FULL_DAY => array(
+      'info' => t('Full Day Surf Report'),
     ),
   );
 }
@@ -90,6 +94,27 @@ function surf_block_view($delta = '') {
           }
         
         }
+        return $block;
+      }
+      break;
+    case SURF_REPORT_FULL_DAY:
+      $block = array();
+      $terms = context_get('surf', 'terms');
+      $county_code = field_get_items('taxonomy_term', $term, 'spitcast_county_code');
+      $value = field_view_value('taxonomy_term', $term, 'field_spitcast_county_code', $$county_code[0]);
+      if (isset($terms) && count($terms) && $terms != FALSE) {
+        foreach ($terms as $term) {
+          $reports = surf_report_by_county($value);
+          $items = array();
+          foreach ($reports as $report) {
+            $items[] = $report->spot_name . ': ' . $report->minShape_full . ' ' . $report->minSize . '-' . $report->maxSize . ' ft'; 
+          }
+          $block['subject'] = $term->name . ' Surf Reports';
+          $block['content'] = array(
+            '#theme' => 'item_list',
+            '#items' => $items,
+          );
+        } 
         return $block;
       }
       break;
@@ -271,6 +296,23 @@ function surf_openlayers_layers() {
   }
   $layers[$layer->name] = $layer;
   
+  // surf report
+//   $layer = new stdClass();
+//   $layer->api_version = 1;
+//   $layer->name = 'surf_report';
+//   $layer->title = t('California Surf Reports');
+//   $layer->description = t('Reports by County');
+  
+//   $layer->data = array(
+//       'layer_type' => 'openlayers_layer_type_raw',
+//     	'layer_handler' => 'openlayers_raw',
+//       'projection' => array('4326'),
+//       'baselayer' => FALSE,
+//       'vector' => TRUE,
+//       //'features' => _surf_county_data(),
+//   );
+//   $layers[$layer->name] = $layer;
+  
   return $layers;
 }
 
@@ -361,3 +403,19 @@ function _surf_county_data() {
   return $features;
 }
 
+/**
+ * // hit spitcast API and get county report
+ * Enter description here ...
+ * @param unknown_type $county_name
+ */
+function surf_report_by_county($county_name) {
+  // @todo: cache this 
+  $url = "http://www.spitcast.com/api/county/spots/" . $county_name . '/';
+  $result = drupal_http_request($url);
+  $report = array();
+  if ($result->code == 200) {
+    $data = $result->data;
+    $report = json_decode($data);
+  }
+  return $report;
+}
