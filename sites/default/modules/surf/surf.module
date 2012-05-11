@@ -67,7 +67,6 @@ function surf_block_view($delta = '') {
           if (isset($terms) && count($terms) && $terms != FALSE) {
             foreach ($terms as $term) {
               $recent_friends = _surf_county_recent_friends(array_keys($friends), $term->tid);
-              var_dump($recent_friends);
               if (count($recent_friends)) {
                 $items = array();
                 foreach ($recent_friends as $friend) {
