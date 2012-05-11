@@ -100,10 +100,11 @@ function surf_block_view($delta = '') {
     case SURF_REPORT_FULL_DAY:
       $block = array();
       $terms = context_get('surf', 'terms');
-      $county_code = field_get_items('taxonomy_term', $term, 'spitcast_county_code');
-      $value = field_view_value('taxonomy_term', $term, 'field_spitcast_county_code', $$county_code[0]);
+
       if (isset($terms) && count($terms) && $terms != FALSE) {
         foreach ($terms as $term) {
+          $county_code = field_get_items('taxonomy_term', $term, 'spitcast_county_code');
+          $value = field_view_value('taxonomy_term', $term, 'field_spitcast_county_code', $$county_code[0]);
           $reports = surf_report_by_county($value);
           $items = array();
           foreach ($reports as $report) {
