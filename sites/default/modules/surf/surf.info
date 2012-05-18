@@ -1,5 +1,4 @@
 name = Surf Module
 description = Surf related glue code
 core = 7.x
-
 dependencies[] = fb
